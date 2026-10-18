@@ -315,6 +315,9 @@ export function validateLlmOutput(input: ValidateLlmInputOptions | string): Guar
   return validate(input, true);
 }
 
+export const FLOWCHART_CANVAS_OFF_CLAUSE =
+  'The flowchart canvas is off. Do not mention flowcharts, diagrams, nodes, or drawing tools unless the user asks about them.';
+
 export function buildChatSystemPrompt(
   options: {
     profile?: GuardrailProfile;
@@ -325,6 +328,7 @@ export function buildChatSystemPrompt(
     toolNames?: string[];
     tools?: Array<{ name: string; description?: string; parameters?: Record<string, unknown> }>;
     toolProtocol?: 'native' | 'xml';
+    flowchartCanvas?: 'on' | 'off';
   } = {},
 ): string {
   const product = normalizeText(options.product || '');
@@ -370,6 +374,10 @@ When using the XML fallback protocol, emit exactly:
 <tool_call name="TOOL_NAME">{"arg":"value"}</tool_call>${xmlExample}
 Do not invent tool names. After tool results arrive, answer the user concisely.`;
     }
+  }
+
+  if (options.flowchartCanvas === 'off') {
+    prompt += `\n${FLOWCHART_CANVAS_OFF_CLAUSE}`;
   }
 
   if (extraRules) {

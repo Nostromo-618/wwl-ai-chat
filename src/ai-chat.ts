@@ -1487,7 +1487,11 @@ export class AiChat {
     }
     if (rejectedSources || rejectedHistoryTurns) this._needsEngineReload = true;
     let input = text + sourceContext(sources);
-    if (options.flowchartDocument !== undefined)
+    if (
+      options.flowchartDocument &&
+      typeof options.flowchartDocument === 'object' &&
+      !Array.isArray(options.flowchartDocument)
+    )
       input += flowchartSnapshot(options.flowchartDocument).text;
     const images = visionImagesForModel(getModelOption(this.modelId), options.images);
     if (images.length)
@@ -1676,15 +1680,21 @@ export class AiChat {
         }
         operation.check();
         const xml = webllmTools || this._toolProtocol === 'xml';
-        const nativeCalls = xml
+        const extracted = xml
           ? parseXmlToolCalls(reply).calls
           : this._extractNativeToolCalls(rawMessage);
+        const nativeCalls = extracted.filter((call) => call?.args?._parseError !== true);
         const looseCalls =
           !xml && !nativeCalls.length
             ? parseLooseToolCalls(`${reply}\n${rawMessage?.content || ''}`)
             : [];
-        const calls = nativeCalls.length ? nativeCalls : looseCalls;
-        if (looseCalls.length && /Failed to parse|<\|\s*tool_call/i.test(reply))
+        const recoveredLoose = !nativeCalls.length && looseCalls.length > 0;
+        const calls = nativeCalls.length ? nativeCalls : recoveredLoose ? looseCalls : extracted;
+        if (
+          recoveredLoose &&
+          (/Failed to parse|<\|\s*tool_call/i.test(reply) ||
+            extracted.some((call) => call?.args?._parseError === true))
+        )
           parseFailure = true;
         if (xml && /<\/?tool_call\b/i.test(parseXmlToolCalls(reply).remainder))
           throw new Error('Malformed tool protocol.');
@@ -1865,10 +1875,18 @@ export class AiChat {
       const visible = visibleGenerationText(reply);
       if (onUpdate && visible) onUpdate(visible);
     };
-    if (typeof conversation.sendMessageStreaming === 'function') {
-      for await (const chunk of iterateMessageStream(conversation.sendMessageStreaming(userText)))
-        accept(chunk);
-    } else accept(await conversation.sendMessage(userText));
+    try {
+      if (typeof conversation.sendMessageStreaming === 'function') {
+        for await (const chunk of iterateMessageStream(conversation.sendMessageStreaming(userText)))
+          accept(chunk);
+      } else accept(await conversation.sendMessage(userText));
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
+      const error = err instanceof Error ? err : new Error(String(err ?? 'Generation failed.'));
+      const body = reply.trim();
+      if (body && !error.message.includes(body)) error.message = `${error.message}\n${body}`;
+      throw error;
+    }
     if (calls.length) rawMessage = { ...rawMessage, tool_calls: calls };
     return { reply: visibleGenerationText(reply), usage: null, rawMessage };
   }

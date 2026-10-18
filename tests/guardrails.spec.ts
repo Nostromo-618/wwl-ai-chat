@@ -4,6 +4,7 @@ import {
   validateLlmOutput,
   normalizeJailbreakScanText,
   buildChatSystemPrompt,
+  FLOWCHART_CANVAS_OFF_CLAUSE,
   validateToolCall,
   parseXmlToolCalls,
   formatXmlToolResult,
@@ -95,6 +96,25 @@ describe('llm guardrails', () => {
     expect(prompt).toContain('CRITICAL REMINDER');
     expect(prompt).toContain('search_curriculum');
     expect(prompt).toContain('Be brief.');
+    expect(prompt).not.toContain(FLOWCHART_CANVAS_OFF_CLAUSE);
+  });
+
+  it('keeps the canvas-off clause beside other rules and out of the tool list', () => {
+    const off = buildChatSystemPrompt({
+      flowchartCanvas: 'off',
+      extraRules: 'Answer in 1–3 short conversational sentences.',
+    });
+    expect(off).toContain(FLOWCHART_CANVAS_OFF_CLAUSE);
+    expect(off).toContain('1–3 short conversational sentences');
+    expect(off).not.toContain('set_flowchart_document');
+    const on = buildChatSystemPrompt({
+      flowchartCanvas: 'on',
+      toolsEnabled: true,
+      toolNames: ['set_flowchart_document'],
+      tools: [{ name: 'set_flowchart_document', description: 'Draw the flowchart.' }],
+    });
+    expect(on).toContain('set_flowchart_document');
+    expect(on).not.toContain(FLOWCHART_CANVAS_OFF_CLAUSE);
   });
 
   it('allows benign creative requests past the input guardrails', () => {

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AiChat } from '../src/ai-chat.js';
+import { prepareFlowchartDocument, validateFlowchartDocument } from '../src/guardrails/tools.js';
+import { promisesFollowUpCall, promisesFollowUpDump } from './flowchart-parse-fixture.js';
 
 describe('AiChat tool calling', () => {
   it('XML loop executes allowlisted tool then returns final reply', async () => {
@@ -359,5 +361,97 @@ describe('AiChat tool calling', () => {
     expect(chat._tools).toEqual([
       { name: 'ok', description: '', parameters: { type: 'object', properties: {} } },
     ]);
+  });
+
+  function flowchartChat() {
+    const chat = new AiChat({ modelId: 'gemma-4-E2B-it-web' });
+    chat.registerTools([
+      { name: 'set_flowchart_document', description: 'Replace', parameters: { type: 'object' } },
+    ]);
+    chat._isLoaded = true;
+    return chat;
+  }
+
+  it('applies a dumped follow-up diagram when the engine throws the live parser error', async () => {
+    const chat = flowchartChat();
+    chat.engine = {
+      createConversation: async () => ({ sendMessage: async () => ({ content: '' }) }),
+    };
+    (chat as any)._completeOnceLiteRTDetailed = async () => {
+      throw new Error(promisesFollowUpDump());
+    };
+    let applied = false;
+    const final = await chat.generateWithTools('put some more effort into the arrows', {
+      execute: async (_name, args) => {
+        const prepared = prepareFlowchartDocument((args as { document?: unknown }).document) as {
+          edges: unknown[];
+        };
+        expect(validateFlowchartDocument(prepared).allowed).toBe(true);
+        expect(prepared.edges).toHaveLength(7);
+        applied = true;
+        return { ok: true };
+      },
+    });
+    expect(applied).toBe(true);
+    expect(final).toBe('Updated the flowchart.');
+    expect(final).not.toContain('Failed to parse');
+  });
+
+  it('recovers a streamed diagram when the engine throws only the grammar error', async () => {
+    const chat = flowchartChat();
+    chat.engine = {
+      createConversation: async () => ({
+        sendMessageStreaming() {
+          return (async function* () {
+            yield { content: promisesFollowUpCall() };
+            throw new Error(
+              'Failed to parse FC tool calls: FallThrough(ParseCancelledError(InputMismatchError()))',
+            );
+          })();
+        },
+      }),
+    };
+    let edgeCount = 0;
+    const final = await chat.generateWithTools('add the arrows', {
+      execute: async (_name, args) => {
+        const prepared = prepareFlowchartDocument((args as { document?: unknown }).document) as {
+          edges: unknown[];
+        };
+        edgeCount = prepared.edges.length;
+        return { ok: true };
+      },
+    });
+    expect(edgeCount).toBe(7);
+    expect(final).toBe('Updated the flowchart.');
+    expect(final).not.toContain('FallThrough');
+  });
+
+  it('prefers a loose diagram over a native tool call that failed to parse', async () => {
+    const chat = flowchartChat();
+    chat.engine = {
+      createConversation: async () => ({ sendMessage: async () => ({ content: '' }) }),
+    };
+    (chat as any)._completeOnceLiteRTDetailed = async () => ({
+      reply: promisesFollowUpDump(),
+      usage: null,
+      rawMessage: {
+        content: promisesFollowUpDump(),
+        tool_calls: [{ function: { name: 'set_flowchart_document', arguments: '{not-json' } }],
+      },
+    });
+    let applied = false;
+    const final = await chat.generateWithTools('add the arrows', {
+      execute: async (_name, args) => {
+        const prepared = prepareFlowchartDocument((args as { document?: unknown }).document) as {
+          nodes: unknown[];
+        };
+        expect(prepared.nodes.length).toBe(8);
+        expect(JSON.stringify(args)).not.toContain('_parseError');
+        applied = true;
+        return { ok: true };
+      },
+    });
+    expect(applied).toBe(true);
+    expect(final).toBe('Updated the flowchart.');
   });
 });

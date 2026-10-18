@@ -38,6 +38,7 @@ export {
   validateLlmInput,
   validateLlmOutput,
   buildChatSystemPrompt,
+  FLOWCHART_CANVAS_OFF_CLAUSE,
   LLM_BLOCK_MESSAGE,
   LLM_OUTPUT_BLOCK_MESSAGE,
   normalizeJailbreakScanText,
