@@ -1,6 +1,6 @@
 {
   "name": "@wwl/wwl-ai-chat",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "Headless browser-local AiChat with LiteRT, WebLLM and Transformers.js adapters, local guardrails and safe markdown",
   "type": "module",

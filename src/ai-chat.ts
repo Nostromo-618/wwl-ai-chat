@@ -54,7 +54,7 @@ const CDN = {
   litert: 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.17.1/+esm',
 };
 
-export const WWL_AI_CHAT_VERSION = '0.1.1';
+export const WWL_AI_CHAT_VERSION = '0.2.0';
 
 export const TOOLS_UNSUPPORTED_ERROR =
   'Tool calling is only supported on LiteRT Gemma (E2B/E4B) models.';
