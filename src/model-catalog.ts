@@ -29,12 +29,14 @@ export type ModelOption = {
   reasoning?: 'none' | 'optional' | 'required';
   variantOf?: string;
   catalogRole?: 'primary' | 'variant';
-  capabilities?: { chat: boolean; docs: boolean; tools: boolean };
+  capabilities?: { chat: boolean; docs: boolean; tools: boolean; vision?: boolean };
   runtimeVersion?: string;
   externalDataFiles?: number;
-  /** Text-only ONNX graph. Distinct from the single-file LFM decoder layout. */
-  transformersGraph?: 'ministral3-text';
-  toolCalling?: { modelSupport: 'documented'; integration: 'native' | 'pending'; source: string };
+  toolCalling?: {
+    modelSupport: 'documented';
+    integration: 'native' | 'xml' | 'pending';
+    source: string;
+  };
 };
 export const MODEL_GROUPS = [
   { id: 'gemma4', label: 'Gemma 4' },
@@ -149,34 +151,6 @@ const models: ModelOption[] = [
       source: model.source,
     },
   })),
-  {
-    id: 'Ministral-3-3B-Instruct-2512-q4-ONNX',
-    label: 'Ministral 3 3B Instruct ONNX · Experimental',
-    tier: 'Experimental',
-    group: 'ministral3',
-    family: 'ministral3',
-    backend: 'transformers',
-    requires: ['shader-f16'],
-    approxBytes: 0,
-    // Exported RoPE base. The ONNX graph uses dynamic lengths; this is not the 256k card.
-    maxNumTokens: 16384,
-    experimental: true,
-    precision: 'q4',
-    transformersGraph: 'ministral3-text',
-    repo: 'mistralai/Ministral-3-3B-Instruct-2512-ONNX',
-    catalogRole: 'primary',
-    license: 'apache-2.0',
-    purpose:
-      'Experimental text-only ONNX chat. Loads the q4 decoder and fp16 embeddings, not the vision encoder.',
-    reasoning: 'none',
-    runtimeVersion: '4.3.1',
-    capabilities: { chat: true, docs: true, tools: false },
-    toolCalling: {
-      modelSupport: 'documented',
-      integration: 'pending',
-      source: 'https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512',
-    },
-  },
   {
     id: 'Mistral-7B-Instruct-v0.3-q4f16_1-MLC',
     label: 'Mistral 7B Instruct · Experimental',

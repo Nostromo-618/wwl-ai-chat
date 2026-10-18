@@ -148,17 +148,4 @@ describe('ONNX text load plan', () => {
       useExternalDataFormat: 1,
     });
   });
-
-  it('loads Ministral Instruct as a text-only q4 decoder plus fp16 embeddings', () => {
-    const model = MODEL_OPTIONS.find(
-      (entry) => entry.id === 'Ministral-3-3B-Instruct-2512-q4-ONNX',
-    )!;
-    const plan = onnxTextLoadPlan(model);
-    expect(plan).toEqual({
-      modelClass: 'Ministral3ForCausalLM',
-      dtype: { decoder_model_merged: 'q4', embed_tokens: 'fp16' },
-    });
-    expect(JSON.stringify(plan)).not.toContain('vision_encoder');
-    expect(plan.useExternalDataFormat).toBeUndefined();
-  });
 });

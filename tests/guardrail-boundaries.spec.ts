@@ -33,19 +33,18 @@ function loaded(modelId = 'gemma-4-E2B-it-web', onGuardrail?: (event: GuardrailE
 const experimentalIds = [
   'Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC',
   'Ministral-3-3B-Reasoning-2512-q4f16_1-MLC',
-  'Ministral-3-3B-Instruct-2512-q4-ONNX',
   'Mistral-7B-Instruct-v0.3-q4f16_1-MLC',
 ];
 
 describe('curated models', () => {
-  it('keeps Gemma as the default and adds four experimental Mistral choices', () => {
+  it('keeps Gemma as the default and lists working tool-capable Mistral choices', () => {
     expect(PRIMARY_MODEL_OPTIONS.map((model) => model.id)).toEqual([
       'gemma-4-E2B-it-web',
       'gemma-4-E4B-it-web',
       'LFM2.5-2.6B-q4f16-ONNX',
       ...experimentalIds,
     ]);
-    expect(MODEL_OPTIONS).toHaveLength(8);
+    expect(MODEL_OPTIONS).toHaveLength(7);
     expect(new Set(MODEL_OPTIONS.map((m) => m.backend))).toEqual(
       new Set(['litert', 'webllm', 'transformers']),
     );
@@ -89,9 +88,6 @@ describe('curated models', () => {
     const reasoning = MODEL_OPTIONS.find(
       (model) => model.id === 'Ministral-3-3B-Reasoning-2512-q4f16_1-MLC',
     )!;
-    const onnx = MODEL_OPTIONS.find(
-      (model) => model.id === 'Ministral-3-3B-Instruct-2512-q4-ONNX',
-    )!;
     const mistral7 = MODEL_OPTIONS.find(
       (model) => model.id === 'Mistral-7B-Instruct-v0.3-q4f16_1-MLC',
     )!;
@@ -103,19 +99,9 @@ describe('curated models', () => {
     expect(reasoning.reasoning).toBe('required');
     expect(reasoning.group).toBe('ministral3');
     expect(reasoning.family).toBe('ministral3');
-    expect(onnx.backend).toBe('transformers');
-    expect(onnx.transformersGraph).toBe('ministral3-text');
-    expect(onnx.maxNumTokens).toBe(16384);
-    expect(onnx.group).toBe('ministral3');
-    expect(
-      onnx.artifacts?.map((artifact) => artifact.path).filter((path) => path.startsWith('onnx/')),
-    ).toEqual([
-      'onnx/decoder_model_merged_q4.onnx',
-      'onnx/decoder_model_merged_q4.onnx_data',
-      'onnx/decoder_model_merged_q4.onnx_data_1',
-      'onnx/embed_tokens_fp16.onnx',
-      'onnx/embed_tokens_fp16.onnx_data',
-    ]);
+    expect(MODEL_OPTIONS.some((model) => model.id === 'Ministral-3-3B-Instruct-2512-q4-ONNX')).toBe(
+      false,
+    );
     expect(mistral7.group).toBe('mistral7b');
     expect(mistral7.overrides).toEqual({ context_window_size: 4096, sliding_window_size: -1 });
     expect(mistral7.maxNumTokens).toBe(4096);

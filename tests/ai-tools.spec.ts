@@ -157,7 +157,120 @@ describe('AiChat tool calling', () => {
     expect(onTool.mock.calls.some((c) => c[0].result?.error === 'tool.args.schema')).toBe(true);
   });
 
-  it('throws when tool loop returns empty final reply', async () => {
+  it('recovers a Gemma call:name payload when native parsing throws', async () => {
+    const chat = new AiChat({ modelId: 'gemma-4-E2B-it-web' });
+    chat.registerTools([
+      { name: 'set_flowchart_document', description: 'Replace', parameters: { type: 'object' } },
+    ]);
+    chat._isLoaded = true;
+    chat.engine = {
+      createConversation: async () => ({ sendMessage: async () => ({ content: '' }) }),
+    };
+    const dumped =
+      'Failed to parse tool calls from code block: call:set_flowchart_document{document:{edges:[{id:"next",from:{nodeId:"node-5",port:"bottom"},to:{nodeId:"node-6",port:"top"}}],nodes:[{id:"node-5",type:"rounded-rect",text:"Start: JS Promises"},{id:"node-6",type:"rect",text:"1. Create Promise (resolve/reject)",text_content:"duplicate"}]}}';
+    (chat as any)._completeOnceLiteRTDetailed = async () => {
+      throw new Error(dumped);
+    };
+    const seen: unknown[] = [];
+    const final = await chat.generateWithTools('ok - draw diagram explaining JS promises', {
+      execute: async (_name, args) => {
+        seen.push(args);
+        return { ok: true };
+      },
+    });
+    expect(final).toBe('Updated the flowchart.');
+    expect(JSON.stringify(seen[0])).toContain('JS Promises');
+    expect(JSON.stringify(seen[0])).toContain('text_content');
+    expect(final).not.toContain('Failed to parse');
+  });
+
+  it('hides a loose tool-call parse failure and reports a rejected document', async () => {
+    const chat = new AiChat({ modelId: 'gemma-4-E2B-it-web' });
+    chat.registerTools([
+      { name: 'set_flowchart_document', description: 'Replace', parameters: { type: 'object' } },
+    ]);
+    chat._isLoaded = true;
+    chat.engine = {
+      createConversation: async () => ({ sendMessage: async () => ({ content: '' }) }),
+    };
+    (chat as any)._completeOnceLiteRTDetailed = async () => ({
+      reply:
+        'Failed to parse tool calls <|tool_call>call:set_flowchart_document{document:{nodes:[],edges:[]}}',
+      usage: null,
+      rawMessage: { content: '' },
+    });
+    const final = await chat.generateWithTools('draw a diagram', {
+      execute: async () => ({ error: 'flowchart.document.invalid' }),
+    });
+    expect(final).toBe('The flowchart update was rejected.');
+    const broken = new AiChat({ modelId: 'gemma-4-E2B-it-web' });
+    broken.registerTools([
+      { name: 'set_flowchart_document', description: 'Replace', parameters: { type: 'object' } },
+    ]);
+    broken._isLoaded = true;
+    broken.engine = chat.engine;
+    (broken as any)._completeOnceLiteRTDetailed = async () => {
+      throw new Error('engine down');
+    };
+    await expect(
+      broken.generateWithTools('draw a diagram', { execute: async () => ({ ok: true }) }),
+    ).rejects.toThrow(/engine down/);
+  });
+
+  it('WebLLM XML loop executes an allowlisted tool when toolProtocol is xml and returns the final reply', async () => {
+    const defaultChat = new AiChat({
+      modelId: 'Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC',
+    });
+    defaultChat.registerTools([
+      { name: 'set_flowchart_document', description: 'Replace', parameters: { type: 'object' } },
+    ]);
+    defaultChat._isLoaded = true;
+    defaultChat.engine = {};
+    await expect(
+      defaultChat.generateWithTools('Draw a start and end.', {
+        execute: async () => ({ ok: true }),
+      }),
+    ).rejects.toThrow(/Tool calling is only supported/);
+
+    const chat = new AiChat({
+      modelId: 'Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC',
+      toolProtocol: 'xml',
+    });
+    chat.registerTools([
+      { name: 'set_flowchart_document', description: 'Replace', parameters: { type: 'object' } },
+    ]);
+    chat._isLoaded = true;
+    const replies = [
+      '<tool_call name="set_flowchart_document">{"document":{"nodes":[],"edges":[]}}</tool_call>',
+      'The flowchart now has a start and an end.',
+    ];
+    let i = 0;
+    chat.engine = {
+      chat: {
+        completions: {
+          create: vi.fn(async () => {
+            const reply = replies[Math.min(i, replies.length - 1)];
+            i += 1;
+            return (async function* () {
+              yield { choices: [{ delta: { content: reply } }] };
+            })();
+          }),
+        },
+      },
+    };
+    const calls: string[] = [];
+    const final = await chat.generateWithTools('Draw a start and end.', {
+      execute: async (name) => {
+        calls.push(name);
+        return { ok: true };
+      },
+    });
+    expect(calls).toEqual(['set_flowchart_document']);
+    expect(final).toContain('start and an end');
+    expect(chat.messages.at(-1)?.content).toBe(final);
+  });
+
+  it('throws when tool loop returns empty final reply on round 0, or synthesizes completion after a succeeded tool call', async () => {
     const chat = new AiChat({ modelId: 'gemma-4-E2B-it-web', toolProtocol: 'xml' });
     chat.registerTools([{ name: 'ping', description: 'p', parameters: { type: 'object' } }]);
     chat._isLoaded = true;
@@ -175,6 +288,21 @@ describe('AiChat tool calling', () => {
       /empty response during tool loop/,
     );
     expect(chat.messages).toEqual([]);
+
+    let round = 0;
+    (chat as any)._completeOnceLiteRTDetailed = async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          reply: '<tool_call name="ping">{}</tool_call>',
+          usage: null,
+          rawMessage: { content: '<tool_call name="ping">{}</tool_call>' },
+        };
+      }
+      return { reply: '', usage: null, rawMessage: { content: '' } };
+    };
+    const final = await chat.generateWithTools('draw', { execute: async () => ({ ok: true }) });
+    expect(final).toBe('Updated the flowchart.');
   });
 
   it('throws when maxRounds exceeded', async () => {

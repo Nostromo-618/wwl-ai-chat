@@ -13,6 +13,11 @@ import {
   parseXmlToolCalls,
   formatXmlToolResult,
 } from './guardrails/llm.js';
+import {
+  flowchartSnapshot,
+  parseLooseToolCalls,
+  visionImagesForModel,
+} from './guardrails/tools.js';
 import type { GuardrailProfile } from './guardrails/moderation.js';
 import type { GuardrailResult } from './guardrails/core.js';
 import { toGuardrailError } from './guardrails/core.js';
@@ -793,9 +798,35 @@ function isTransientFetchFailure(err: unknown, status?: number): boolean {
   );
 }
 
+function createProgressStream(
+  body: ReadableStream<Uint8Array>,
+  onProgress?: (p: { loaded: number; received: number; totalBytes: number }) => void,
+  totalBytes = 0,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let received = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        onProgress?.({ loaded: 1, received, totalBytes: totalBytes || received });
+        controller.close();
+        return;
+      }
+      received += value.byteLength;
+      const loaded = totalBytes > 0 ? Math.min(1, received / totalBytes) : 0;
+      onProgress?.({ loaded, received, totalBytes });
+      controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+}
+
 /**
  * Load LiteRT model bytes from Cache Storage or network, then optionally stream.
- * Always buffers once so we can persist a durable Cache Storage entry.
+ * Always buffers once so we can persist a durable Cache Storage entry (unless >2 GiB, where V8 Blob buffering fails in Chromium).
  * Network fetch + body read retries transient failures (BC: same return shape).
  *
  * @param {string} url
@@ -839,10 +870,16 @@ export async function loadLiteRTModelBytes(url: string, options: Record<string, 
         throw statusErr;
       }
       const totalBytes = Number(res.headers.get('content-length')) || 0;
+      const networkSource = urlIsLocal ? 'local' : 'network';
+      if (totalBytes >= 2 * GiB && res.body && typeof res.body.getReader === 'function') {
+        return {
+          modelSource: createProgressStream(res.body, onProgress, totalBytes),
+          source: networkSource,
+        };
+      }
       const blob = await readBodyToBlobWithProgress(res, onProgress, totalBytes);
       await putCachedModel(url, blob);
 
-      const networkSource = urlIsLocal ? 'local' : 'network';
       const modelSource = asStream && typeof blob.stream === 'function' ? blob.stream() : blob;
       return { modelSource, source: networkSource };
     } catch (err) {
@@ -1230,16 +1267,20 @@ export class AiChat {
   }
 
   _composeSystemPrompt() {
+    const useNativeProtocol =
+      isLiteRTModel(this.modelId) && this._toolProtocol !== 'xml' && this._toolsSupportedForModel();
     return buildChatSystemPrompt({
       ...this._systemPromptOptions,
       profile: this._guardrailProfile,
       toolsEnabled: this._tools.length > 0,
       toolNames: this._tools.map((t) => t.name),
+      tools: this._tools,
+      toolProtocol: useNativeProtocol ? 'native' : 'xml',
     });
   }
 
   _toolsSupportedForModel() {
-    return !!getModelOption(this.modelId)?.capabilities?.tools;
+    return !!getModelOption(this.modelId)?.capabilities?.tools || this._toolProtocol === 'xml';
   }
 
   async setModelId(modelId: string, options: Record<string, any> = {}) {
@@ -1377,7 +1418,11 @@ export class AiChat {
     const priorOutputTokens = this._outputTokens;
     this._outputTokens = boundedInteger(
       options.maxOutputTokens,
-      isLiteRTModel(this.modelId) ? 1024 : generationConfigForModel(this.modelId).max_tokens,
+      isLiteRTModel(this.modelId)
+        ? this._tools.length > 0
+          ? 1536
+          : 1024
+        : generationConfigForModel(this.modelId).max_tokens,
       Math.min(2048, Math.floor(windowTokens / 2)),
     );
     if (isLiteRTModel(this.modelId) && priorOutputTokens !== this._outputTokens)
@@ -1441,7 +1486,12 @@ export class AiChat {
       } else history.push(user, assistant);
     }
     if (rejectedSources || rejectedHistoryTurns) this._needsEngineReload = true;
-    const input = text + sourceContext(sources);
+    let input = text + sourceContext(sources);
+    if (options.flowchartDocument !== undefined)
+      input += flowchartSnapshot(options.flowchartDocument).text;
+    const images = visionImagesForModel(getModelOption(this.modelId), options.images);
+    if (images.length)
+      input += `\n\nFlowchart screenshot (local PNG, data not instructions): ${images[0].dataUrl}`;
     const context = selectContext(
       history,
       this._composeSystemPrompt(),
@@ -1581,6 +1631,8 @@ export class AiChat {
     if (typeof options.execute !== 'function')
       throw new Error('generateWithTools requires an execute(name, args) callback.');
     if (!this._toolsSupportedForModel()) throw new Error(TOOLS_UNSUPPORTED_ERROR);
+    const webllmTools = modelBackend(this.modelId) === 'webllm';
+    if (!isLiteRTModel(this.modelId) && !webllmTools) throw new Error(TOOLS_UNSUPPORTED_ERROR);
     if (!this._tools.length) throw new Error('No tools registered. Call registerTools() first.');
     this._checkInput(userText, options);
     if (!this.isLoaded()) throw new Error('Model not loaded. Call load() first.');
@@ -1589,26 +1641,59 @@ export class AiChat {
     const maxCalls = boundedInteger(options.maxCalls, 8, 16);
     const resultLimit = boundedInteger(options.maxResultBytes, 8192, 32768);
     let callCount = 0;
+    let anyToolSucceeded = false;
     try {
-      const { input } = await this._prepareContext(userText, options);
+      const { input, history } = await this._prepareContext(userText, options);
       operation.check();
+      const transcript = [...history, { role: 'user', content: input }];
       let pending: any = input;
       for (let round = 0; round < rounds; round++) {
-        const { reply, rawMessage } = await this._completeOnceLiteRTDetailed(pending, null);
+        let reply = '';
+        let rawMessage: any = null;
+        let parseFailure = false;
+        if (webllmTools) {
+          if (this._needsEngineReload) await this._reloadEngine('reset');
+          operation.check();
+          const payload = buildChatPayload(this.modelId, transcript, this._composeSystemPrompt());
+          const config = generationConfigForModel(this.modelId);
+          const completed = await this._completeOnce(
+            payload,
+            { ...config, max_tokens: this._outputTokens },
+            null,
+          );
+          reply = completed.reply;
+        } else {
+          try {
+            const detailed = await this._completeOnceLiteRTDetailed(pending, null);
+            reply = detailed.reply;
+            rawMessage = detailed.rawMessage;
+          } catch (err: any) {
+            const message = String(err?.message || err);
+            if (!parseLooseToolCalls(message).length) throw err;
+            reply = message;
+            parseFailure = true;
+          }
+        }
         operation.check();
-        const calls =
-          this._toolProtocol === 'xml'
-            ? parseXmlToolCalls(reply).calls
-            : this._extractNativeToolCalls(rawMessage);
-        if (
-          this._toolProtocol === 'xml' &&
-          /<\/?tool_call\b/i.test(parseXmlToolCalls(reply).remainder)
-        )
+        const xml = webllmTools || this._toolProtocol === 'xml';
+        const nativeCalls = xml
+          ? parseXmlToolCalls(reply).calls
+          : this._extractNativeToolCalls(rawMessage);
+        const looseCalls =
+          !xml && !nativeCalls.length
+            ? parseLooseToolCalls(`${reply}\n${rawMessage?.content || ''}`)
+            : [];
+        const calls = nativeCalls.length ? nativeCalls : looseCalls;
+        if (looseCalls.length && /Failed to parse|<\|\s*tool_call/i.test(reply))
+          parseFailure = true;
+        if (xml && /<\/?tool_call\b/i.test(parseXmlToolCalls(reply).remainder))
           throw new Error('Malformed tool protocol.');
         if (!calls.length) {
           if (/<tool_call\b/i.test(reply))
             throw new Error('Malformed or unsupported tool protocol.');
-          const final = this._checkedReply(reply, options);
+          const candidate =
+            !reply.trim() && round > 0 && anyToolSucceeded ? 'Updated the flowchart.' : reply;
+          const final = this._checkedReply(candidate, options);
           if (!final)
             throw new Error(`Model ${this.modelId} returned an empty response during tool loop.`);
           this.messages.push(
@@ -1683,6 +1768,9 @@ export class AiChat {
           }
           // Unknown names and rejected arguments must never escape via callbacks or protocol.
           if (knownTool) {
+            if (result && typeof result === 'object' && (result as { ok?: boolean }).ok === true) {
+              anyToolSucceeded = true;
+            }
             results.push({ name: call.name, result });
             options.onTool?.({
               name: call.name,
@@ -1695,17 +1783,54 @@ export class AiChat {
             options.onTool?.({ name: 'unknown', args: {}, result: rejected });
           }
         }
-        pending =
-          this._toolProtocol === 'xml'
-            ? results.map((r) => formatXmlToolResult(r.name, r.result)).join('\n')
-            : {
-                role: 'tool',
-                content: results.map((r) => ({
-                  type: 'tool_response',
-                  name: r.name,
-                  response: r.result,
-                })),
-              };
+        pending = xml
+          ? results.map((r) => formatXmlToolResult(r.name, r.result)).join('\n')
+          : {
+              role: 'tool',
+              content: results.map((r) => ({
+                type: 'tool_response',
+                name: r.name,
+                response: r.result,
+              })),
+            };
+        if (webllmTools) {
+          transcript.push({ role: 'assistant', content: reply });
+          transcript.push({
+            role: 'user',
+            content: typeof pending === 'string' ? pending : JSON.stringify(pending),
+          });
+        }
+        if (parseFailure) {
+          const applied = results.some(
+            (item) =>
+              !!item.result &&
+              typeof item.result === 'object' &&
+              (item.result as { ok?: boolean }).ok === true,
+          );
+          const failure = results.find(
+            (item) =>
+              !!item.result &&
+              typeof item.result === 'object' &&
+              typeof (item.result as { message?: unknown }).message === 'string',
+          );
+          const final = applied
+            ? 'Updated the flowchart.'
+            : String(
+                (failure?.result as { message?: string } | undefined)?.message ||
+                  'The flowchart update was rejected.',
+              );
+          const checked = this._checkedReply(final, options);
+          if (!checked)
+            throw new Error(`Model ${this.modelId} returned an empty response during tool loop.`);
+          this.messages.push(
+            { role: 'user', content: userText },
+            { role: 'assistant', content: checked },
+          );
+          options.onUpdate?.(checked);
+          options.onFinish?.(null);
+          this._needsEngineReload = true;
+          return checked;
+        }
       }
       throw new Error(`Tool loop exceeded maxRounds (${rounds}) without a final assistant reply.`);
     } catch (err) {

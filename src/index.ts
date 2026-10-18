@@ -51,6 +51,18 @@ export {
   parseXmlToolCalls,
   formatXmlToolResult,
 } from './guardrails/llm.js';
+export {
+  SET_FLOWCHART_DOCUMENT,
+  FLOWCHART_DRAW_FOLLOW_UP,
+  FLOWCHART_TOOL_DESCRIPTION,
+  FLOWCHART_TOOL_PARAMETERS,
+  prepareFlowchartDocument,
+  flowchartDrawNeedsFollowUp,
+  validateFlowchartDocument,
+  flowchartSnapshot,
+  visionImagesForModel,
+  parseLooseToolCalls,
+} from './guardrails/tools.js';
 
 export { labsMarkdownToHtml, markdownToHtml } from './markdown.js';
 

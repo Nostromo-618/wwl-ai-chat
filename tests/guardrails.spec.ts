@@ -158,6 +158,13 @@ describe('tool guardrails', () => {
     const bad = parseXmlToolCalls('<tool_call name="x">{not-json}</tool_call>');
     expect(bad.calls[0].args._parseError).toBe(true);
 
+    const noAttr = parseXmlToolCalls(
+      '<tool_call>{"name":"ping","arguments":{"x":1}}</tool_call><tool_call>{"name":"pong","args":1}</tool_call><tool_call>{}</tool_call>',
+    );
+    expect(noAttr.calls).toHaveLength(2);
+    expect(noAttr.calls[0]).toEqual({ name: 'ping', args: { x: 1 } });
+    expect(noAttr.calls[1].args._parseError).toBe(true);
+
     expect(formatXmlToolResult('ping', { ok: true })).toContain('ping');
     expect(formatXmlToolResult('', { a: 1 })).toContain('unknown');
 

@@ -323,6 +323,8 @@ export function buildChatSystemPrompt(
     extraRules?: string;
     toolsEnabled?: boolean;
     toolNames?: string[];
+    tools?: Array<{ name: string; description?: string; parameters?: Record<string, unknown> }>;
+    toolProtocol?: 'native' | 'xml';
   } = {},
 ): string {
   const product = normalizeText(options.product || '');
@@ -342,11 +344,32 @@ export function buildChatSystemPrompt(
   }
 
   if (toolsEnabled) {
-    const list = toolNames.length ? toolNames.join(', ') : '(host-registered tools)';
-    prompt += `\nYou may call tools when needed. Allowed tools: ${list}.
-When using the XML fallback protocol, emit exactly:
-<tool_call name="TOOL_NAME">{"arg":"value"}</tool_call>
+    const defs = Array.isArray(options.tools) ? options.tools : [];
+    const names = toolNames.length
+      ? toolNames
+      : defs.map((t) => normalizeText(t?.name || '')).filter(Boolean);
+    const list = names.length ? names.join(', ') : '(host-registered tools)';
+    if (options.toolProtocol === 'native') {
+      prompt += `\nYou may call tools when needed. Allowed tools: ${list}.
 Do not invent tool names. After tool results arrive, answer the user concisely.`;
+    } else {
+      const toolDocs = defs
+        .map((t) => {
+          const name = normalizeText(t?.name || '');
+          const desc = normalizeText(t?.description || '');
+          return name && desc ? `- ${name}: ${desc}` : '';
+        })
+        .filter(Boolean)
+        .join('\n');
+      const hasFlowchartTool = names.includes('set_flowchart_document');
+      const xmlExample = hasFlowchartTool
+        ? '\nExample XML tool call for set_flowchart_document:\n<tool_call name="set_flowchart_document">{"document":{"nodes":[{"id":"start","type":"rounded-rect","text":"Start"},{"id":"step_1","type":"rect","text":"Step 1"},{"id":"end","type":"rounded-rect","text":"End"}],"edges":[{"id":"e1","from":{"nodeId":"start","port":"bottom"},"to":{"nodeId":"step_1","port":"top"}},{"id":"e2","from":{"nodeId":"step_1","port":"bottom"},"to":{"nodeId":"end","port":"top"}}]}}</tool_call>'
+        : '';
+      prompt += `\nYou may call tools when needed. Allowed tools: ${list}.${toolDocs ? `\nTool definitions:\n${toolDocs}` : ''}
+When using the XML fallback protocol, emit exactly:
+<tool_call name="TOOL_NAME">{"arg":"value"}</tool_call>${xmlExample}
+Do not invent tool names. After tool results arrive, answer the user concisely.`;
+    }
   }
 
   if (extraRules) {

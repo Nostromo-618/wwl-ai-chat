@@ -929,5 +929,34 @@ describe('model cache flags + Cache Storage', () => {
     });
     expect(cachedAgain.source).toBe('cache');
     expect(cachedAgain.modelSource).toBeInstanceOf(Blob);
+
+    const progressUpdates: Array<{ loaded: number; received: number; totalBytes: number }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        statusText: '',
+        headers: { get: (k: string) => (k === 'content-length' ? String(3 * 1024 ** 3) : null) },
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([10, 20, 30]));
+            controller.close();
+          },
+        }),
+      })),
+    );
+    const largeStream = await loadLiteRTModelBytes('http://localhost/models/e4b.litertlm', {
+      asStream: true,
+      urlIsLocal: true,
+      onProgress: (p) => progressUpdates.push(p),
+    });
+    expect(largeStream.source).toBe('local');
+    expect(largeStream.modelSource).toBeInstanceOf(ReadableStream);
+    const reader = (largeStream.modelSource as ReadableStream<Uint8Array>).getReader();
+    const first = await reader.read();
+    expect(Array.from(first.value || [])).toEqual([10, 20, 30]);
+    const done = await reader.read();
+    expect(done.done).toBe(true);
+    expect(progressUpdates.at(-1)?.loaded).toBe(1);
   });
 });

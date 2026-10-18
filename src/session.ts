@@ -26,6 +26,10 @@ export type GenerateOptions = {
   maxOutputTokens?: number;
   contextTokenBudget?: number;
   sources?: ContextSource[];
+  /** Current flowchart JSON. Quoted as data; it does not add instructions. */
+  flowchartDocument?: unknown;
+  /** Local screenshots. Kept only when the loaded model declares vision. */
+  images?: { mediaType?: string; dataUrl?: string }[];
   onUpdate?: (text: string) => void;
   onFinish?: (usage: unknown) => void;
   onContext?: (status: ContextStatus) => void;
